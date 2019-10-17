@@ -1,41 +1,172 @@
 import socket
-import select
 import sys
-from threading import *
-
+from thread import *
 
 # AF_INET refers to the use of IPv4, SOCK_STREAM refers to TCP
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-# server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-"""
-When the server script is started from the command line,
-we want to pass it 3 arguments for the script, IP address,
-and port number.
-"""
-if len(sys.argv) != 3:
-    print("Correct usage: <script> <IP> <port>")
+# When the server script is started from the command line,
+# we want to pass it 2 arguments for the script,
+# and port number.
+if len(sys.argv) != 2:
+    print("Correct usage: <script> <port>")
     exit()
 
-IP_ADDRESS = str(sys.argv[1])
-PORT = int(sys.argv[2])
+# We want to grab the IPv4 address of the host domain that is running this server
+HOST = socket.gethostbyname(socket.gethostname())
+print "Hosting on " + HOST
+PORT = int(sys.argv[1])
 
-server.bind(IP_ADDRESS, PORT)
+# The server socket is bound to the corresponding host and port
+server.bind((HOST, PORT))
 
-# The server will listen for up to 5 connections
-server.listen(5)
+# The users dictionary will be populated with key value pairs,
+# the values being the socket connected to the server, and the
+# key being the alias provided by the user.
+users = {}
 
-# This list will eventually be populated with the client sockets that have connected
-users = []
 
-"""
-A new thread will be created for each user that connects, in order to listen
-to users concurrently. Below is the function to be executed for every new thread.
-"""
+def user_thread(clientsocket, address):
+    """
+     This function defines the code that will be run for each new thread
+     that is generated when a client socket connects to the server.
 
-def user_thread(socket, addr):
-    socket.send("You've entered the chat!")
+    :param clientsocket: the socket object of the connected client
+    :param address: the IPv4 address of the connected client
+    :return:
+    """
+
+    clientsocket.send("-->You've entered the chat!")
     while True:
+        # Header + data will always be a fixed size of 512 bytes. The
+        # thread will block until a message is received from
+        # the client socket.
         try:
-            # This function receives 2048 bytes of data from the connected socket
-            data = socket.recv(2048)
+            data = clientsocket.recv(512)
+            # Data should be parsed based on proper header and data format
+            parsed_data = parse_data(data)
+            # parsed_data returns a tuple of strings that represent all the header and
+            # data fields in the users message. server_action will perform some action
+            # based on the request verb and other header info.
+            server_action(clientsocket, address, parsed_data)
+
+        except Exception as e:
+            print e
+
+
+def server_live():
+    """
+    When this function is called, the server is live. It will accept connections,
+    and start a new thread for each connected client. The number of connections is
+    managed so that only 5 connections can be active at once.
+
+    :return: Nothing
+    """
+
+    # Listen for connections
+    server.listen(5)
+
+    # The server will accept up to 5 connections
+    # TODO figure out a clean way to allow for server to continue running after 5 connections.
+
+    while True:
+        if len(users) < 5:
+            clientsocket, address = server.accept()
+            print "connection from {} was established!".format(address)
+
+            # A new thread will be created for each user that connects, in order to listen
+            # to users concurrently.
+            start_new_thread(user_thread, (clientsocket, address))
+        else:
+            continue
+
+
+def parse_data(data):
+    """
+    This function will parse the binary data (in ASCII) based on the header field sizes
+    outlined in the application's RFC.
+
+    :param data: 512 bytes of binary data received from the client socket, representing
+    the ASCII encoded message, both the header and the data.
+    :return: a tuple of strings representing the parsed header fields and data.
+    """
+
+    # Note that the data will be in ASCII at this point
+    source_client = data[3:33]
+    dest_client = data[33:63]
+    request_verb = data[63:66]
+    message = data[256:]
+
+    # We want to decode everything before we use the string values in future code
+    return source_client.decode("utf-8").strip(), dest_client.decode("utf-8").strip(), \
+           request_verb.decode("utf-8").strip(), message.decode("utf-8").strip()
+
+
+def server_action(clientsocket, address, (source_client, dest_client, request_verb, message)):
+    """
+    The purpose of this function is to perform an action based on the
+    request verb provided by the user. This function will be called
+    every time a message is received from connected client sockets.
+
+    :param clientsocket: the client's socket object connected to the server
+    :param address: the client's IPv4 address
+    :param source_client: string representing user alias
+    :param dest_client: string representing alias of intended recipient
+    :param request_verb: string representing action requested of server
+    :param message: string representing message sent by user
+    :return: Nothing
+    """
+
+    # If the user is initially registering their alias
+    if source_client == "temp" and request_verb == "reg":
+        user_alias = message[:30]
+        users[user_alias] = clientsocket
+        clientsocket.send("-->Alias successfully registered!")
+        for alias, socket in users.iteritems():
+            if alias != user_alias:
+                socket.send("-->" + user_alias + " has entered the chat!")
+
+    # If the user is re-registering their alias, we simply change the name
+    # of the key being used for the socket in the users dictionary.
+    elif request_verb == "reg":
+        alias = message[:30]
+        users[alias] = users[source_client]
+        del users[source_client]
+
+    # If the message is to be sent to a particular user
+    elif request_verb == "one":
+        users[dest_client].send("-->From " + source_client + ": " + message)
+
+    # If the message is to be sent to all users
+    elif request_verb == "all":
+        for alias, socket in users.iteritems():
+            if alias != source_client:
+                socket.send("-->From " + source_client + ": " + message)
+
+    # If the user requests a list of all other users
+    elif request_verb == "who":
+        user_list = "Active users: "
+        for alias, socket in users.iteritems():
+            if alias != source_client:
+                user_list += (alias + ", ")
+        # Send user list to source client socket
+        users[source_client].send("-->" + user_list)
+
+    # If the user requests to disconnect from the chat
+    elif request_verb == "bye":
+        for alias, socket in users.iteritems():
+            if alias != source_client:
+                socket.send("-->" + source_client + " has left the chat!")
+        # Remove from active users list
+        users.pop(source_client, None)
+        print "{} has disconnected.".format(address)
+        # Kill the thread
+        exit()
+
+    # If the request verb was anything else, the server will do nothing
+    else:
+        pass
+
+
+# Make the server live
+server_live()
