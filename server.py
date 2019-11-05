@@ -1,6 +1,7 @@
 import socket
 import sys
 from thread import *
+import hashlib
 
 # AF_INET refers to the use of IPv4, SOCK_STREAM refers to TCP
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -44,11 +45,10 @@ def user_thread(clientsocket, address):
         try:
             data = clientsocket.recv(512)
             # Data should be parsed based on proper header and data format
-            parsed_data = parse_data(data)
-            # parsed_data returns a tuple of strings that represent all the header and
-            # data fields in the users message. server_action will perform some action
-            # based on the request verb and other header info.
-            server_action(clientsocket, address, parsed_data)
+            source_client, dest_client, request_verb, checksum, message = parse_data(data)
+            # server_action will perform some action based on the request verb and other header info.
+            server_action(clientsocket, address, source_client, dest_client, request_verb,
+                          checksum, message)
 
         except Exception as e:
             print e
@@ -67,7 +67,6 @@ def server_live():
     server.listen(5)
 
     # The server will accept up to 5 connections
-    # TODO figure out a clean way to allow for server to continue running after 5 connections.
 
     while True:
         if len(users) < 5:
@@ -95,14 +94,35 @@ def parse_data(data):
     source_client = data[3:33]
     dest_client = data[33:63]
     request_verb = data[63:66]
+    checksum = data[66:98]
     message = data[256:]
 
     # We want to decode everything before we use the string values in future code
     return source_client.decode("utf-8").strip(), dest_client.decode("utf-8").strip(), \
-           request_verb.decode("utf-8").strip(), message.decode("utf-8").strip()
+           request_verb.decode("utf-8").strip(), checksum.decode("utf-8").strip(), message.decode("utf-8").strip()
 
 
-def server_action(clientsocket, address, (source_client, dest_client, request_verb, message)):
+def verify_checksum(message, header_checksum):
+    """
+    This function compares the checksum in the header with a checksum generated
+    based on the message received. If they are the same, then the checksum has
+    been verified. If they are different, then packet corruption has occurred.
+
+    :param message: string representing message sent by client
+    :param header_checksum: string representing hexadecimal checksum provided
+    in packet header
+    :return: boolean representing outcome of checksum verification
+    """
+
+    checksum = hashlib.md5()
+    checksum.update(message)
+
+    if checksum.hexdigest() == header_checksum:
+        return True
+    return False
+
+
+def server_action(clientsocket, address, source_client, dest_client, request_verb, checksum, message):
     """
     The purpose of this function is to perform an action based on the
     request verb provided by the user. This function will be called
@@ -113,12 +133,17 @@ def server_action(clientsocket, address, (source_client, dest_client, request_ve
     :param source_client: string representing user alias
     :param dest_client: string representing alias of intended recipient
     :param request_verb: string representing action requested of server
+    :param checksum: string representing hexadecimal checksum for message
     :param message: string representing message sent by user
     :return: Nothing
     """
 
+    # First we want to verify that there was no packet corruption
+    if not verify_checksum(message, checksum):
+        clientsocket.send("RESEND")
+
     # If the user is initially registering their alias
-    if source_client == "temp" and request_verb == "reg":
+    elif source_client == "temp" and request_verb == "reg":
         user_alias = message[:30]
         users[user_alias] = clientsocket
         clientsocket.send("-->Alias successfully registered!")

@@ -29,19 +29,29 @@ except:
 
 
 def main():
+    # For purposes of checksum verification on the server side, if the server
+    # sends an error, we want to resend the previous packet
+    previous_packet = None
+
     # First we want to make an alias for the user, and send it to the server.
     # The initial alias is temp by default
     ALIAS = "temp"
     successfully_registered = False
     while not successfully_registered:
         user_alias = raw_input("Provide your alias for the chat.\nreg: ")
-        message = generate_packet(VERSION, ALIAS, "", "reg", user_alias)
+        checksum = generate_checksum(user_alias)
+        message = generate_packet(VERSION, ALIAS, "", "reg", checksum, user_alias)
         server.send(message)
+        previous_packet = message
         try:
             server_message = server.recv(512)
-            print server_message
-            successfully_registered = True
-            ALIAS = user_alias
+            # If there was packet corruption
+            if server_message == "RESEND":
+                print server_message
+                successfully_registered = True
+                ALIAS = user_alias
+            else:
+                server.send(previous_packet)
         except:
             print "Alias was not successfully registered"
             continue
@@ -62,12 +72,16 @@ def main():
         for inputs in read_streams:
             if inputs == server:
                 message = server.recv(512)
-                print message
+                if message == "RESEND":
+                    server.send(previous_packet)
+                else:
+                    print message
             else:
                 user_input = raw_input()
                 dest_client, request_verb, message = parse_user_input(user_input)
                 checksum = generate_checksum(message)
                 packet = generate_packet(VERSION, ALIAS, dest_client, request_verb, checksum, message)
+                previous_packet = packet
                 server.send(packet)
                 if request_verb == "bye":
                     server.close()
@@ -140,7 +154,7 @@ def generate_packet(version, source_client, dest_client, request_verb, checksum,
 
     # ljust() appends spaces to a string (left-justified) to give it the total width specified.
     header = version.ljust(3) + source_client.ljust(30) + dest_client.ljust(30) \
-        + request_verb.ljust(3) + checksum.ljust(32) + "".ljust(158) + message.ljust(255)
+        + request_verb.ljust(3) + checksum.ljust(32) + "".ljust(158) + message.ljust(256)
 
     return header.encode("utf-8")
 
