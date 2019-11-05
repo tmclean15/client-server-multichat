@@ -1,6 +1,7 @@
 import socket
 import sys
 import select
+import hashlib
 
 # Application version number
 VERSION = "1.0"
@@ -65,11 +66,26 @@ def main():
             else:
                 user_input = raw_input()
                 dest_client, request_verb, message = parse_user_input(user_input)
-                packet = generate_packet(VERSION, ALIAS, dest_client, request_verb, message)
+                checksum = generate_checksum(message)
+                packet = generate_packet(VERSION, ALIAS, dest_client, request_verb, checksum, message)
                 server.send(packet)
                 if request_verb == "bye":
                     server.close()
                     exit()
+
+
+def generate_checksum(data):
+    """
+    This function generates a checksum based on the data field given to it. It uses
+    the md5 hashing function to generate a hexadecimal checksum.
+
+    :param data: string representing user message to be sent.
+    :return: string representing data checksum in hexadecimal, based on hash
+    """
+
+    checksum = hashlib.md5()
+    checksum.update(data)
+    return checksum.hexdigest()
 
 
 def parse_user_input(user_input):
@@ -108,7 +124,7 @@ def parse_user_input(user_input):
             return pre_colon, "one", message
 
 
-def generate_packet(version, source_client, dest_client, request_verb, message):
+def generate_packet(version, source_client, dest_client, request_verb, checksum, message):
     """
     This function generates an ASCII encoded packet that conforms to the header and
     data format outlined in the application's RFC.
@@ -117,13 +133,14 @@ def generate_packet(version, source_client, dest_client, request_verb, message):
     :param source_client: string representing alias of user
     :param dest_client: string representing alias of intended recipient
     :param request_verb: string representing action requested of server
+    :param checksum: string representing hexadecimal checksum of message
     :param message: string representing message to be sent
     :return: ASCII encoded
     """
 
     # ljust() appends spaces to a string (left-justified) to give it the total width specified.
     header = version.ljust(3) + source_client.ljust(30) + dest_client.ljust(30) \
-        + request_verb.ljust(3) + "".ljust(190) + message.ljust(255)
+        + request_verb.ljust(3) + checksum.ljust(32) + "".ljust(158) + message.ljust(255)
 
     return header.encode("utf-8")
 
