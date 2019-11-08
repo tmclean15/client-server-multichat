@@ -122,6 +122,28 @@ def verify_checksum(message, header_checksum):
     return False
 
 
+def remove_user(source_client, address):
+    """
+    This function is called when a user must be removed from the chat. It notifies
+    all other users of their departure, removes the user from the dictionary of users,
+    and kills the thread that is currently running on the server to listen for the
+    user.
+
+    :param source_client: string representing alias of user being removed
+    :param address: string representing address of user being removed
+    :return: None
+    """
+
+    for alias, socket in users.iteritems():
+        if alias != source_client:
+            socket.send("-->" + source_client + " has left the chat!")
+    # Remove from active users list
+    users.pop(source_client, None)
+    print "{} has disconnected.".format(address)
+    # Kill the thread
+    exit()
+
+
 def server_action(clientsocket, address, source_client, dest_client, request_verb, checksum, message):
     """
     The purpose of this function is to perform an action based on the
@@ -140,16 +162,31 @@ def server_action(clientsocket, address, source_client, dest_client, request_ver
 
     # First we want to verify that there was no packet corruption
     if not verify_checksum(message, checksum):
-        clientsocket.send("RESEND")
+        try:
+            clientsocket.send("RESEND")
+            print "Packet received from {0} is corrupt, requesting resend.".format(address)
+        except IOError, e:
+            # If there is an I/O error, then the client connection has likely dropped (broken pipe)
+            remove_user(source_client, address)
 
     # If the user is initially registering their alias
     elif source_client == "temp" and request_verb == "reg":
         user_alias = message[:30]
         users[user_alias] = clientsocket
-        clientsocket.send("-->Alias successfully registered!")
+
+        # Any time we try to send to a client socket, we risk that connection being closed and
+        # an IOError being thrown
+        try:
+            clientsocket.send("-->Alias successfully registered!")
+        except IOError, e:
+            remove_user(source_client, address)
+
         for alias, socket in users.iteritems():
             if alias != user_alias:
-                socket.send("-->" + user_alias + " has entered the chat!")
+                try:
+                    socket.send("-->" + user_alias + " has entered the chat!")
+                except IOError, e:
+                    remove_user(alias, socket.getpeername())
 
     # If the user is re-registering their alias, we simply change the name
     # of the key being used for the socket in the users dictionary.
@@ -160,13 +197,19 @@ def server_action(clientsocket, address, source_client, dest_client, request_ver
 
     # If the message is to be sent to a particular user
     elif request_verb == "one":
-        users[dest_client].send("-->From " + source_client + ": " + message)
+        try:
+            users[dest_client].send("-->From " + source_client + ": " + message)
+        except IOError, e:
+            remove_user(dest_client, users[dest_client].getpeername())
 
     # If the message is to be sent to all users
     elif request_verb == "all":
         for alias, socket in users.iteritems():
             if alias != source_client:
-                socket.send("-->From " + source_client + ": " + message)
+                try:
+                    socket.send("-->From " + source_client + ": " + message)
+                except IOError, e:
+                    remove_user(alias, socket.getpeername())
 
     # If the user requests a list of all other users
     elif request_verb == "who":
@@ -174,19 +217,16 @@ def server_action(clientsocket, address, source_client, dest_client, request_ver
         for alias, socket in users.iteritems():
             if alias != source_client:
                 user_list += (alias + ", ")
-        # Send user list to source client socket
-        users[source_client].send("-->" + user_list)
+
+        try:
+            # Send user list to source client socket
+            clientsocket.send("-->" + user_list)
+        except IOError, e:
+            remove_user(source_client, address)
 
     # If the user requests to disconnect from the chat
     elif request_verb == "bye":
-        for alias, socket in users.iteritems():
-            if alias != source_client:
-                socket.send("-->" + source_client + " has left the chat!")
-        # Remove from active users list
-        users.pop(source_client, None)
-        print "{} has disconnected.".format(address)
-        # Kill the thread
-        exit()
+        remove_user(source_client, address)
 
     # If the request verb was anything else, the server will do nothing
     else:

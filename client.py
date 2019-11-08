@@ -2,6 +2,7 @@ import socket
 import sys
 import select
 import hashlib
+from random import randint
 
 # Application version number
 VERSION = "1.0"
@@ -39,19 +40,20 @@ def main():
     successfully_registered = False
     while not successfully_registered:
         user_alias = raw_input("Provide your alias for the chat.\nreg: ")
-        checksum = generate_checksum(user_alias)
-        message = generate_packet(VERSION, ALIAS, "", "reg", checksum, user_alias)
-        server.send(message)
-        previous_packet = message
+        packet = generate_packet(VERSION, ALIAS, "", "reg", user_alias)
+        server.send(packet)
+        previous_packet = packet
         try:
             server_message = server.recv(512)
             # If there was packet corruption
             if server_message == "RESEND":
+                amended_packet = replace_checksum(previous_packet)
+                previous_packet = amended_packet
+                server.send(amended_packet)
+            else:
                 print server_message
                 successfully_registered = True
                 ALIAS = user_alias
-            else:
-                server.send(previous_packet)
         except:
             print "Alias was not successfully registered"
             continue
@@ -71,16 +73,21 @@ def main():
 
         for inputs in read_streams:
             if inputs == server:
-                message = server.recv(512)
-                if message == "RESEND":
-                    server.send(previous_packet)
-                else:
-                    print message
+                try:
+                    message = server.recv(512)
+                    if message == "RESEND":
+                        amended_packet = replace_checksum(previous_packet)
+                        previous_packet = amended_packet
+                        server.send(amended_packet)
+                    else:
+                        print message
+                except:
+                    print "-->Message could not be sent"
+                    continue
             else:
                 user_input = raw_input()
                 dest_client, request_verb, message = parse_user_input(user_input)
-                checksum = generate_checksum(message)
-                packet = generate_packet(VERSION, ALIAS, dest_client, request_verb, checksum, message)
+                packet = generate_packet(VERSION, ALIAS, dest_client, request_verb, message)
                 previous_packet = packet
                 server.send(packet)
                 if request_verb == "bye":
@@ -91,15 +98,39 @@ def main():
 def generate_checksum(data):
     """
     This function generates a checksum based on the data field given to it. It uses
-    the md5 hashing function to generate a hexadecimal checksum.
+    the md5 hashing function to generate a hexadecimal checksum. For purposes of testing
+    the checksum verification process, an incorrect checksum will be returned about 10%
+    of the time.
 
     :param data: string representing user message to be sent.
     :return: string representing data checksum in hexadecimal, based on hash
     """
 
+    rand_num = randint(1, 10)
+    if rand_num == 1:
+        return ""
+
+    data = data.strip()
     checksum = hashlib.md5()
     checksum.update(data)
     return checksum.hexdigest()
+
+
+def replace_checksum(packet):
+    """
+    This function replaces the checksum in a packet to be sent to the server.
+    It is used to deal with RESEND errors that are received from the server
+    when sent packages are corrupt.
+
+    :param packet: string representing a formatted packet, with header and data
+    :return: string representing new packet with replaced checksum in header
+    """
+
+    message = packet[256:]
+    new_checksum = generate_checksum(message)
+    new_packet = (packet[:66] + new_checksum + packet[98:]).encode("utf-8")
+
+    return new_packet
 
 
 def parse_user_input(user_input):
@@ -138,7 +169,7 @@ def parse_user_input(user_input):
             return pre_colon, "one", message
 
 
-def generate_packet(version, source_client, dest_client, request_verb, checksum, message):
+def generate_packet(version, source_client, dest_client, request_verb, message):
     """
     This function generates an ASCII encoded packet that conforms to the header and
     data format outlined in the application's RFC.
@@ -152,11 +183,14 @@ def generate_packet(version, source_client, dest_client, request_verb, checksum,
     :return: ASCII encoded
     """
 
+    # The checksum is calculated based on the message
+    checksum = generate_checksum(message)
+
     # ljust() appends spaces to a string (left-justified) to give it the total width specified.
-    header = version.ljust(3) + source_client.ljust(30) + dest_client.ljust(30) \
+    packet = version.ljust(3) + source_client.ljust(30) + dest_client.ljust(30) \
         + request_verb.ljust(3) + checksum.ljust(32) + "".ljust(158) + message.ljust(256)
 
-    return header.encode("utf-8")
+    return packet.encode("utf-8")
 
 
 main()
