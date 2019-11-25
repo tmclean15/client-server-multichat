@@ -1,7 +1,7 @@
 import socket
 import sys
 import select
-import codecs
+from utility import parse_data, generate_packet, crypt_rot13
 
 # Application version number
 VERSION = "3.0"
@@ -40,7 +40,7 @@ def main():
     successfully_registered = False
     while not successfully_registered:
         user_alias = raw_input("-->Provide your alias for the chat.\nreg: ")
-        message = generate_packet(VERSION, ALIAS, "", "reg", user_alias)
+        message = generate_packet(VERSION, ALIAS, "", "reg", "cleartext", user_alias)
         server.send(message)
         try:
             server_message = server.recv(512)
@@ -66,14 +66,18 @@ def main():
 
         for inputs in read_streams:
             if inputs == server:
-                message = server.recv(512)
-                print message
+                data = server.recv(512)
+                version, source_client, dest_client, request_verb, header_enc, message = parse_data(data)
+                if header_enc == "ROT13":
+                    message = crypt_rot13(message)
+                print "-->" + source_client + ": " + message
             else:
                 user_input = raw_input()
                 dest_client, request_verb, message = parse_user_input(user_input)
                 # If the user is toggling encryption, we need to implement toggle, and do not need
                 # to send a packet to the server.
                 if request_verb == "enc":
+                    global ENCRYPTION_ON
                     ENCRYPTION_ON = not ENCRYPTION_ON
                     if ENCRYPTION_ON:
                         print "-->Encryption is toggled on."
@@ -83,6 +87,8 @@ def main():
                     # The encryption technique header field will be the value of ENCRYPTION variable if
                     # encryption is toggled on, and "cleartext" if toggled off.
                     header_enc = ENCRYPTION if ENCRYPTION_ON else "cleartext"
+                    if ENCRYPTION_ON:
+                        message = crypt_rot13(message)
                     packet = generate_packet(VERSION, ALIAS, dest_client, request_verb, header_enc, message)
                     server.send(packet)
                     if request_verb == "bye":
@@ -118,7 +124,7 @@ def parse_user_input(user_input):
         elif pre_colon == "who":
             return "", "who", ""
         # If the user wants to toggle encryption
-        elif pre_colon == "enc:":
+        elif pre_colon == "enc":
             return "", "enc", ""
         # If the user wants to disconnect from the chat
         elif pre_colon == "bye":
@@ -128,34 +134,6 @@ def parse_user_input(user_input):
         else:
             return pre_colon, "one", message
 
-
-def generate_packet(version, source_client, dest_client, request_verb, header_enc, message):
-    """
-    This function generates an ASCII encoded packet that conforms to the header and
-    data format outlined in the application's RFC.
-
-    :param version: number representing application version
-    :param source_client: string representing alias of user
-    :param dest_client: string representing alias of intended recipient
-    :param request_verb: string representing action requested of server
-    :param header_enc: string representing encryption technique employed
-    :param message: string representing message to be sent
-    :return: ASCII encoded
-    """
-
-    # If encryption is toggled on, we want to first encrypt the message
-    if ENCRYPTION_ON:
-        message = encrypt_rot13(message)
-
-    # ljust() appends spaces to a string (left-justified) to give it the total width specified.
-    header = version.ljust(3) + source_client.ljust(30) + dest_client.ljust(30) \
-        + request_verb.ljust(3) + header_enc.ljust(32) + "".ljust(190) + message.ljust(255)
-
-    return header.encode("utf-8")
-
-
-def encrypt_rot13(message):
-    return codecs.encode(message, "rot_13")
 
 main()
 

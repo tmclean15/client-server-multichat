@@ -1,6 +1,7 @@
 import socket
 import sys
 from thread import *
+from utility import parse_data, generate_packet, crypt_rot13
 
 # AF_INET refers to the use of IPv4, SOCK_STREAM refers to TCP
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -36,7 +37,7 @@ def user_thread(clientsocket, address):
     :return:
     """
 
-    clientsocket.send("-->You've entered the chat!")
+    clientsocket.send("-->SERVER: You've entered the chat!")
     while True:
         # Header + data will always be a fixed size of 512 bytes. The
         # thread will block until a message is received from
@@ -48,7 +49,7 @@ def user_thread(clientsocket, address):
             # parsed_data returns a tuple of strings that represent all the header and
             # data fields in the users message. server_action will perform some action
             # based on the request verb and other header info.
-            server_action(clientsocket, address, parsed_data)
+            server_action(clientsocket, address, data)
 
         except Exception as e:
             print e
@@ -67,7 +68,6 @@ def server_live():
     server.listen(5)
 
     # The server will accept up to 5 connections
-    # TODO figure out a clean way to allow for server to continue running after 5 connections.
 
     while True:
         if len(users) < 5:
@@ -81,28 +81,7 @@ def server_live():
             continue
 
 
-def parse_data(data):
-    """
-    This function will parse the binary data (in ASCII) based on the header field sizes
-    outlined in the application's RFC.
-
-    :param data: 512 bytes of binary data received from the client socket, representing
-    the ASCII encoded message, both the header and the data.
-    :return: a tuple of strings representing the parsed header fields and data.
-    """
-
-    # Note that the data will be in ASCII at this point
-    source_client = data[3:33]
-    dest_client = data[33:63]
-    request_verb = data[63:66]
-    message = data[256:]
-
-    # We want to decode everything before we use the string values in future code
-    return source_client.decode("utf-8").strip(), dest_client.decode("utf-8").strip(), \
-           request_verb.decode("utf-8").strip(), message.decode("utf-8").strip()
-
-
-def server_action(clientsocket, address, (source_client, dest_client, request_verb, message)):
+def server_action(clientsocket, address, packet):
     """
     The purpose of this function is to perform an action based on the
     request verb provided by the user. This function will be called
@@ -110,21 +89,30 @@ def server_action(clientsocket, address, (source_client, dest_client, request_ve
 
     :param clientsocket: the client's socket object connected to the server
     :param address: the client's IPv4 address
-    :param source_client: string representing user alias
-    :param dest_client: string representing alias of intended recipient
-    :param request_verb: string representing action requested of server
-    :param message: string representing message sent by user
+    :param packet: the packet sent by the source client
     :return: Nothing
     """
+
+    # First parse the packet for the relevant header information
+    version, source_client, dest_client, request_verb, header_enc, message = parse_data(packet)
 
     # If the user is initially registering their alias
     if source_client == "temp" and request_verb == "reg":
         user_alias = message[:30]
         users[user_alias] = clientsocket
-        clientsocket.send("-->Alias successfully registered!")
+        server_msg = "Alias successfully registered!"
+        # If user has encrypted their message, we should encrypt our message back to them
+        if header_enc == "ROT13":
+            server_msg = crypt_rot13(server_msg)
+        server_packet = generate_packet(version, "SERVER", source_client, "svr", header_enc, server_msg)
+        clientsocket.send(server_packet)
         for alias, socket in users.iteritems():
             if alias != user_alias:
-                socket.send("-->" + user_alias + " has entered the chat!")
+                server_msg = user_alias + " has entered the chat!"
+                if header_enc == "ROT13":
+                    server_msg = crypt_rot13(server_msg)
+                server_packet = generate_packet(version, "SERVER", source_client, "svr", header_enc, server_msg)
+                socket.send(server_packet)
 
     # If the user is re-registering their alias, we simply change the name
     # of the key being used for the socket in the users dictionary.
@@ -135,13 +123,15 @@ def server_action(clientsocket, address, (source_client, dest_client, request_ve
 
     # If the message is to be sent to a particular user
     elif request_verb == "one":
-        users[dest_client].send("-->From " + source_client + ": " + message)
+        users[dest_client].send(packet)
+        print source_client + " -> " + dest_client + ": " + message
 
     # If the message is to be sent to all users
     elif request_verb == "all":
         for alias, socket in users.iteritems():
             if alias != source_client:
-                socket.send("-->From " + source_client + ": " + message)
+                socket.send(packet)
+                print source_client + " -> " + alias + ": " + message
 
     # If the user requests a list of all other users
     elif request_verb == "who":
@@ -149,14 +139,20 @@ def server_action(clientsocket, address, (source_client, dest_client, request_ve
         for alias, socket in users.iteritems():
             if alias != source_client:
                 user_list += (alias + ", ")
-        # Send user list to source client socket
-        users[source_client].send("-->" + user_list)
+        if header_enc == "ROT13":
+            user_list = crypt_rot13(user_list)
+        server_packet = generate_packet(version, "SERVER", source_client, "svr", header_enc, user_list)
+        users[source_client].send(server_packet)
 
     # If the user requests to disconnect from the chat
     elif request_verb == "bye":
         for alias, socket in users.iteritems():
             if alias != source_client:
-                socket.send("-->" + source_client + " has left the chat!")
+                server_msg = source_client + " has left the chat!"
+                if header_enc == "ROT13":
+                    server_msg = crypt_rot13(server_msg)
+                server_packet = generate_packet(version, "SERVER", source_client, "svr", header_enc, server_msg)
+                socket.send(server_packet)
         # Remove from active users list
         users.pop(source_client, None)
         print "{} has disconnected.".format(address)
